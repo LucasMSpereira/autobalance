@@ -12,10 +12,12 @@ class GridWorldEnv(gym.Env):
   # render modes definition
   metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
 
-  def __init__(self, grid_size: int = 5):
+  def __init__(self, grid_size: int = 5, dashRcoefInit: float = -0.5, dashLcoefInit: float = 0.5):
     super(GridWorldEnv, self).__init__()
     self.window_size = 512  # The size of the PyGame window
     self.size = grid_size
+    self.dashRcoef = dashRcoefInit
+    self.dashLcoef = dashLcoefInit
     
     # Observations are dictionaries with the agent's and the target's location.
     # Each location is encoded as an element of {0, ..., `size`}^2, i.e. MultiDiscrete([size, size]).
@@ -23,6 +25,8 @@ class GridWorldEnv(gym.Env):
         {
             "agent": spaces.Box(0, grid_size - 1, shape=(2,), dtype=int),
             "target": spaces.Box(0, grid_size - 1, shape=(2,), dtype=int),
+            "dashL": spaces.Box(0, grid_size - 1, shape=(2,), dtype=int),
+            "dashR": spaces.Box(0, grid_size - 1, shape=(2,), dtype=int),
         }
     )
 
@@ -56,9 +60,9 @@ class GridWorldEnv(gym.Env):
     # can be done separately
   
   def _get_obs(self):
-    return {"agent": self._agent_location, "target": self._target_location}
+    return {"agent": self._agent_location, "target": self._target_location, "dashL": self._dashL_location, "dashR": self._dashR_location}
 
-  # auxiliary info from 'step' and 'reset' (manhattan distance)
+  # auxiliary info from 'step' and 'reset'
   def _get_info(self):
     return {"distance": np.linalg.norm(self._agent_location - self._target_location, ord=1)}
   
@@ -68,12 +72,21 @@ class GridWorldEnv(gym.Env):
     # super().reset()
 
     # Choose the agent's location uniformly at random
-    self._agent_location = np.random.randint(0, self.size - 1, size=2)
+    # self._agent_location = np.random.randint(0, self.size - 1, size=2)
+    # Spawn agent at bottom center
+    self._agent_location = np.array([int(np.ceil(self.size/2)), self.size - 1])
 
     # We will sample the target's location randomly until it does not coincide with the agent's location
-    self._target_location = self._agent_location
-    while np.array_equal(self._target_location, self._agent_location):
-        self._target_location = np.random.randint(0, self.size - 1, size=2)
+    # self._target_location = self._agent_location
+    # while np.array_equal(self._target_location, self._agent_location):
+    #     self._target_location = np.random.randint(0, self.size - 1, size=2)
+    self._target_location = np.array([int(np.random.uniform(low=0.5, high=1.5)*np.ceil(self.size/2)), 0])
+
+    # Left dash location
+    self._dashL_location = np.array([int(np.ceil(self.size/2)), self.size - int(np.ceil(self.size/7))])
+
+    # Right dash location
+    self._dashR_location = np.array([self.size - int(np.ceil(self.size/2)), self.size - int(np.ceil(self.size/7))])
 
     observation = self._get_obs()
     info = self._get_info()
@@ -85,9 +98,18 @@ class GridWorldEnv(gym.Env):
     # Map the action (element of {0,1,2,3}) to the direction we walk in
     direction = self._action_to_direction[action]
     # We use `np.clip` to make sure we don't leave the grid
-    self._agent_location = np.clip(
-        self._agent_location + direction, 0, self.size - 1
-    )
+    self._agent_location = np.clip(self._agent_location + direction, 0, self.size - 1)
+
+    # Displacement vector pointing from agent to exit/target
+    exitDistance = self._target_location - self._agent_location
+    # Check if agent reached one of the dashes and act accordingly
+    if np.array_equal(self._agent_location, self._dashR_location):
+        # If in right dash, move away from exit (initialize dashRcoef as negative)
+        self._agent_location = np.clip(self._agent_location + np.around(self.dashRcoef*exitDistance).astype(int), 0, self.size - 1)
+    elif np.array_equal(self._agent_location, self._dashL_location):
+        # If in left dash, move towards exit (initialize dashLcoef as positive)
+        self._agent_location = np.clip(self._agent_location + np.around(self.dashLcoef*exitDistance).astype(int), 0, self.size - 1)
+    
     # An episode is done if the agent has reached the target
     done = np.array_equal(self._agent_location, self._target_location)
     reward = -np.linalg.norm(self._agent_location - self._target_location)/self.size
@@ -105,12 +127,12 @@ class GridWorldEnv(gym.Env):
         self.clock = pygame.time.Clock()
 
     canvas = pygame.Surface((self.window_size, self.window_size))
-    canvas.fill((155, 50, 155))
+    canvas.fill((141, 207, 246))
     pix_square_size = (
         self.window_size / self.size
     )  # The size of a single grid square in pixels
 
-    # First we draw the target
+    # draw the target
     pygame.draw.rect(
         canvas,
         (255, 0, 100),
@@ -119,12 +141,30 @@ class GridWorldEnv(gym.Env):
             (pix_square_size, pix_square_size),
         ),
     )
-    # Now we draw the agent
+    # draw the agent
     pygame.draw.circle(
         canvas,
-        (80, 80, 255),
+        (38, 165, 38),
         (self._agent_location + 0.5) * pix_square_size,
         pix_square_size / 3,
+    )
+    # draw left dash
+    pygame.draw.rect(
+        canvas,
+        (255, 255, 131),
+        pygame.Rect(
+            pix_square_size * self._dashL_location,
+            (pix_square_size, pix_square_size),
+        ),
+    )
+    # draw right dash
+    pygame.draw.rect(
+        canvas,
+        (255, 255, 131),
+        pygame.Rect(
+            pix_square_size * self._dashR_location,
+            (pix_square_size, pix_square_size),
+        ),
     )
 
     # Finally, add some gridlines

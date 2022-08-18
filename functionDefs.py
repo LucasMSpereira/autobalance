@@ -112,12 +112,13 @@ def watchTrained(env, agent, numEps):
   for _ in range(numEps):
     action, _states = agent.predict(obs)
     obs, rewards, dones, info = env.step(action)
+    print(f'obs {obs}   rewards {rewards}')
     env.render()
     if dones:
       obs = env.reset()
     else:
       False
-  pygame.display.quit()
+  env.close()
 
 
 # save
