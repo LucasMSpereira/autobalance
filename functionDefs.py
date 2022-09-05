@@ -1,10 +1,20 @@
 import numpy as np
+import definitions as defs
 import time
-import pygame
 import gym
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.utils import set_random_seed
+
+# Function to be minimized through bayesian optimization (Ax package)
+def balance(envParams):
+  # create env with current set of parameters
+  env = defs.classDefs.GridWorldEnv(dashLcoefInit = envParams["dashLcoef"], dashRcoefInit = envParams["dashRcoef"])
+  agent = defs.PPO('MultiInputPolicy', env) # create agent
+  agent.learn(total_timesteps = envParams['trainSteps']) # train agent for certain number of steps
+  # Use trained agent for certain number of episodes
+  chooseDashL, chooseDashR, episodes = useTrained(env, agent, envParams['evalEps'], showRender = True)
+  return {"balance": abs(chooseDashL/(chooseDashL + chooseDashR + 1e-6) - 0.5), "episodes": episodes}
 
 def evalAgent(env, steps, agent):
   obs = env.reset()
@@ -15,6 +25,16 @@ def evalAgent(env, steps, agent):
     env.render()
     if done:
       obs = env.reset()
+
+# Test specific configuration of dash coefficients
+def explicitTest(trainSteps, leftCoef, rightCoef, evalEps, showRender):
+  env = defs.classDefs.GridWorldEnv(dashLcoefInit = leftCoef, dashRcoefInit = rightCoef) # instantiate env with random parameters
+  defs.check_env(env, warn = True); env = defs.Monitor(env) # check and wrap env
+  agent = defs.PPO('MultiInputPolicy', env) # create agent
+  agent.learn(total_timesteps = trainSteps) # train agent for certain number of steps
+  dashL, dashR, eps = useTrained(env, agent, evalEps, showRender = showRender)
+  print(f'dashL: {dashL}    dashR: {dashR}    episodes: {eps}')
+
 
 # utility for multiprocessing (multiTrainEval)
 def make_env(env_id, rank, seed=0):
@@ -72,6 +92,12 @@ def multiTrainEval(procNum, env_id, expNum, alg, trainStepNum, evalEnv, EvalEpsN
     reward_std.append(np.std(rewards))
     training_times.append(np.mean(times))
 
+# Ax optimization loop
+def optLoop(numTrials, axClient, parameters):
+  for i in range(numTrials): # optimization loop
+      parameters, trial_index = axClient.get_next_trial() # query client for new trial
+      axClient.complete_trial(trial_index = trial_index, raw_data = balance(parameters))
+
 def selfPlay(env, agt1, agt2, timeSteps):
 
   # Initialize variables needed for training
@@ -107,19 +133,29 @@ def selfPlay(env, agt1, agt2, timeSteps):
   print("Agent 1's score:", total_reward)
   print("Agent 2's score:", -total_reward)
 
-def watchTrained(env, agent, numEps):
-  obs = env.reset()
-  for _ in range(numEps):
-    action, _states = agent.predict(obs)
-    obs, rewards, dones, info = env.step(action)
-    print(f'obs {obs}   rewards {rewards}')
-    env.render()
-    if dones:
-      obs = env.reset()
-    else:
-      False
+# Let trained agent play for certain amount of episodes
+def useTrained(env, agent, numEps, showRender: bool = True, limitSteps: int = 1000):
+  obs = env.reset() # Initially reset env
+  # Initialize counters
+  dashL = 0; dashR = 0; episodes = 0; numSteps = 0
+  for eps in range(numEps): # Loop in desired amount of episodes
+    while numSteps < limitSteps:
+      # Policy determines action according to env state observed
+      action, _ = agent.predict(obs, deterministic = True)
+      obs, _, done, info = env.step(action) # Perform action and change env
+      # Count number of times either dash were chosen
+      if info['dash'] == "R":
+        dashR += 1
+      elif info['dash'] == "L":
+        dashL += 1
+      env.render() if showRender else False # Render step or not
+      numSteps += 1
+      if done: # Upon reaching target, reset env and count episodes
+        obs = env.reset()
+        episodes += 1
+        break
   env.close()
-
+  return dashL, dashR, episodes
 
 # save
 # model.save("./data/models/test") # save trained agent to zip
